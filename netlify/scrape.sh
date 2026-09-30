@@ -179,8 +179,11 @@ if [ "$TARGET_BRANCH" = "main" ]; then
   log "GitLab mirror…"
   mirrored=false
   for attempt in 1 2 3 4 5; do
-    if git push "https://oauth2:${GITLAB_PAT}@gitlab.com/${GL_REPO}.git" HEAD:main; then
+    if git push "https://oauth2:${GITLAB_PAT}@gitlab.com/${GL_REPO}.git" HEAD:main 2>&1 | tee /tmp/glmirror.err; then
       log "GitLab mirror OK (attempt ${attempt})"; mirrored=true; break
+    fi
+    if grep -qE "HTTP Basic: Access denied|Authentication failed|401" /tmp/glmirror.err 2>/dev/null; then
+      fatal "GitLab mirror got 401 — GITLAB_PAT dead/rotted (deterministic; not retrying)"
     fi
     log "mirror attempt ${attempt} failed — retrying in 20s"; sleep 20
   done
@@ -188,13 +191,20 @@ if [ "$TARGET_BRANCH" = "main" ]; then
 fi
 
 # ─── 7. Netlify Blobs snapshot (tertiary — warning on failure) ──────────
+BLOBS_RESULT="skipped_no_push"
 if [ "$PUSHED" = "true" ] && [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
   log "blobs snapshot (tertiary backup)…"
-  python3 work/comfy-templates/scripts/blobs_backup.py snapshot --keep 45 \
-    || echo "::warning::blobs snapshot failed (non-fatal — tertiary layer)"
+  if python3 work/comfy-templates/scripts/blobs_backup.py snapshot --keep 45; then
+    BLOBS_RESULT="success"
+  else
+    BLOBS_RESULT="failed"
+    echo "::warning::blobs snapshot failed (non-fatal — tertiary layer)"
+  fi
 elif [ "$PUSHED" = "true" ]; then
+  BLOBS_RESULT="skipped_no_secrets"
   log "blobs snapshot skipped (Netlify secrets not set)"
 fi
+log "blobs snapshot result: ${BLOBS_RESULT}"
 
 # ─── 8. prod verify (Vercel built_at poll) — main runs only ─────────────
 if [ "$TARGET_BRANCH" = "main" ]; then
@@ -221,7 +231,7 @@ fi
 if [ "$TARGET_BRANCH" = "main" ]; then
   log "state/last-run.json update (best-effort)…"
   GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" GL_MIRROR="success" \
-  BLOBS_SNAPSHOT="$([ "$PUSHED" = "true" ] && echo success || echo skipped)" \
+  BLOBS_SNAPSHOT="$BLOBS_RESULT" \
   python3 - <<'PYEOF' || echo "::warning::state commit failed (non-fatal)"
 import base64, datetime, json, os, urllib.request
 pat, repo = os.environ["GH_PAT"], os.environ["RUNNER_REPO"]
