@@ -27,7 +27,7 @@ port of the GHA refresh.yml).
 |---------------------|--------------------------------------|-----------------------------------|
 | Branch builds       | 30 × ~5 min = ~150 build-min         | credit-based: not metered; free-is-free: 300 min hard ✅ |
 | Production deploys  | **1** (the unlock, manual)           | 15 cr once (credit-based) / 0 (free-is-free) |
-| Scheduled function  | 30 × <1 s ≈ 0.005 cr                 | negligible on both cohorts ✅     |
+| Scheduled function  | 30 × <1 s ≈ 0.1–0.2 cr/month         | negligible on both cohorts ✅     |
 | Blobs storage       | ~45 × 5.5 MB snapshots ≈ 250 MB + 8 git bundles ≈ 700 MB | no storage meter documented (5 GB/object) ✅ |
 | Web requests        | ~30 fn invocations                   | 2 cr / 10K ✅                     |
 
@@ -42,7 +42,7 @@ Both comfortable.
 | Scheduled functions unreliable on Free (pre-r4 finding; r4 doc-confirmed the published-deploy requirement, but daily-cadence reliability is unproven) | ⚠ main experiment risk | (1) deploy on production deploy per docs; (2) the **GHA weekly cron stays armed** (≤7-day worst-case staleness); (3) post-migration the **standby watchdog tightens to daily + 26h window** → same-day alert on missed fires; (4) deploy history = the evidence stream |
 | Build-slot contention (1 concurrent build/account) | ops | fn's in-flight guard skips firing while a build runs; use a dedicated account, not one running fleet experiments |
 | Build queue pile-up on a stuck build | ops | guard skips; stuck builds can be cancelled: `POST /api/v1/deploys/{id}/cancel`; 25-min `timeout-minutes` equivalent via Netlify's build timeout |
-| Upstream API rate limits at 7× cadence | etiquette | pipeline is incremental (meta.json etags): a no-change day does ~10 list calls, not 1,300 fetches; full re-scrape only when the gallery actually changed |
+| Upstream API rate limits at 7× cadence | etiquette | 05 now runs a fresh-on-change + 7-day TTL cache (W15): daily steady state ≈ 94 detail fetches/day (same weekly volume as before, spread out); title changes refresh immediately; the weekly GHA lane still full-refreshes |
 | Data churn / alert noise at daily cadence | calibration | audit check-D caps + verify thresholds were tuned weekly — the W15 daily-cadence audit reviews every gate; worst case a floor needs conscious re-calibration (never loosen to go green) |
 | Vercel deploy volume (Hobby: 100/day) | quota | 1/day ✅ |
 | GHA + Netlify accidental overlap | race | race-safe push (rebase ×3) already handles it; schedules are 7h apart anyway |

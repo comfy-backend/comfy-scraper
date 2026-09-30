@@ -55,10 +55,12 @@ export default async () => {
   }
 
   // ── fire the scrape build (branch deploy = free) ────────────────────
+  // the hook URL is a capability URL — never log it whole (W15-r1 F13)
   const url = hook.includes("?") ? `${hook}&branch=scrape` : `${hook}?branch=scrape`;
+  const masked = hook.replace(/\/build_hooks\/[^?]+/, "/build_hooks/***");
   try {
     const res = await fetch(url, { method: "POST" });
-    console.log(`[daily-scrape] build hook fired: HTTP ${res.status} -> ${url}`);
+    console.log(`[daily-scrape] build hook fired: HTTP ${res.status} -> ${masked}`);
     if (!res.ok) {
       return new Response(`build hook HTTP ${res.status}`, { status: 502 });
     }
