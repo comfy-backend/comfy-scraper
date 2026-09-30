@@ -1,19 +1,23 @@
-# comfy-scraper — MAIN-branch netlify.toml (the production deploy).
+# comfy-scraper — SCRAPE-BRANCH netlify.toml (the compute lane).
 #
-# The production deploy is deliberately BORING: it publishes the static
-# status stub and carries the scheduled function. The heavy pipeline runs
-# as a BRANCH build on the `scrape` branch (see netlify/scrape.branch.toml
-# and README "Why a branch build"): production deploys cost 15 credits
-# each on credit-based free accounts — daily ones would burn ~450 cr/mo,
-# far over the 300 cr pool; branch builds are free.
+# This file is the SOURCE OF TRUTH for the scrape branch's netlify.toml;
+# scripts/sync-scrape-branch.sh copies it over netlify.toml on the scrape
+# branch. The scrape branch is built daily via the build hook
+# (?branch=scrape) fired by netlify/functions/daily-scrape.mjs.
+#
+# Budget: ~5 min/day ≈ 150 build-min/month (free-is-free cap: 300; build
+# minutes are not metered on credit-based accounts). The publish dir is a
+# stub — the real output of this build is the DATA COMMIT pushed to
+# trinitylivy/comfy-templates, not any artifact Netlify serves.
 
 [build]
-  command = "echo 'production deploy: stub only (the scrape runs on the scrape branch)'"
+  command = "bash netlify/scrape.sh"
   publish = "dist"
   functions = "netlify/functions"
 
 [functions]
   node_bundler = "esbuild"
 
-# Scheduled functions need the production deploy to be published at least
-# once; afterwards this branch rebuilds rarely (manual or on push to main).
+# Build env vars (GH_PAT, GITLAB_PAT, NETLIFY_AUTH_TOKEN, NETLIFY_SITE_ID)
+# are set at SITE level via the dashboard/API — see docs/DEPLOYMENT.md.
+# They are visible in BOTH branches' builds; nothing secret lives in git.
