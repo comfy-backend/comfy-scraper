@@ -41,9 +41,26 @@ echo "site: $SITE"
 #    comfy-backend/comfy-scraper, production branch: main.
 
 # 3. Site env vars (Build & deploy → Environment):
+# 3. Site env vars (Build & deploy → Environment):
 #    GH_PAT            trinitylivy PAT (repo push to comfy-templates)
+#    ALERT_GH_PAT      a SEPARATE scoped PAT (issues:write on the runner
+#                      repo) — so a dead GH_PAT cannot also kill the alert
+#                      (the 2026-09-21 silent-death class; scrape.sh falls
+#                      back to GH_PAT when unset)
 #    GITLAB_PAT        the GitLab mirror PAT
 #    NETLIFY_AUTH_TOKEN $TOKEN        (blobs from the build command)
+#    NETLIFY_SITE_ID   $SITE
+#    BUILD_HOOK_URL    https://api.netlify.com/build_hooks/<id>   (step 5)
+#    — or via API:
+#    curl -s -X POST https://api.netlify.com/api/v1/accounts/<acct>/env \
+#      -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+#      -d '{"key":"GH_PAT","values":["ghp_…"],"site_ids":["'$SITE'"]}'
+#
+#    NOTE (W15-r3 env-freeze): scheduled-function env vars are frozen at
+#    the LAST PRODUCTION DEPLOY. Rotating BUILD_HOOK_URL or tokens later
+#    requires republishing main (one 15-cr deploy on credit-based
+#    accounts) — include this in any PAT-rotation runbook.
+
 #    NETLIFY_SITE_ID   $SITE
 #    BUILD_HOOK_URL    https://api.netlify.com/build_hooks/<id>   (step 5)
 #    — or via API:
@@ -60,18 +77,25 @@ bash scripts/sync-scrape-branch.sh        # creates + pushes `scrape`
 #    API: curl -s -X POST https://api.netlify.com/api/v1/sites/$SITE/build_hooks \
 #      -H "Authorization: Bearer $TOKEN" -d '{"title":"daily-scrape","branch":"scrape"}'
 
-# 6. Publish production ONCE (unlocks: scheduled functions + blobs writes —
-#    the fresh-site write gate clears on the first deploy record).
-#    DASHBOARD: Deploys → Publish deploy (on main's first build).
-#    This is the only 15-credit spend on credit-based accounts (0 on
-#    free-is-free). CLI: netlify deploy --prod --dir dist --site $SITE
-#    (from a clone; then push main so the deploy carries the fn).
+# 6. Production deploy: with the site Git-linked to production branch
+#    `main`, pushing main (step 4) ALREADY created the production deploy —
+#    do NOT also run `netlify deploy --prod` (that would mint a SECOND
+#    15-credit spend on credit-based accounts; W15-r3 amendment). Just
+#    confirm the main deploy is green in the dashboard. This one deploy
+#    unlocks: scheduled functions (published-deploy requirement) AND blobs
+#    writes (the fresh-site write gate clears on any deploy record).
 
 # 7. Smoke-test the lane manually (a branch build, free):
 curl -X POST "${BUILD_HOOK_URL}?branch=scrape"
 #    → watch the deploy log; expect: pipeline → audit → consumption test
 #    → push (or "No data changes") → GL mirror OK → DONE all steps green.
 #    First run after a long gap may take ~6-8 min (full re-scrape).
+#    Then verify the blobs lane end-to-end (W15-r1 F9 — prune/list have
+#    never run live; the snapshot step above proves writes only):
+#      NETLIFY_AUTH_TOKEN=$TOKEN NETLIFY_SITE_ID=$SITE \
+#        python3 work/comfy-templates/scripts/blobs_backup.py list --prefix snapshots/
+#    Expect: dated snapshot keys + meta + latest pointer (from step 7's
+#    build, which ran blobs_backup.py snapshot).
 
 # 8. Verify the scheduled function fires tomorrow 04:00 UTC:
 #    site deploys list shows a daily scrape-branch build + the GitHub

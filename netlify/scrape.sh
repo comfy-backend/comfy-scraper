@@ -7,6 +7,10 @@
 # fired daily by netlify/functions/daily-scrape.mjs). ~5 min.
 #
 # Required env: GH_PAT            (push access to DATA_REPO)
+#               ALERT_GH_PAT      (issues:write on RUNNER_REPO — a SEPARATE
+#                                  token so a dead GH_PAT cannot also kill
+#                                  the alert, the 2026-09-21 silent-death
+#                                  class; falls back to GH_PAT if unset)
 # Optional env: GITLAB_PAT        (redundant mirror; REQUIRED for main runs —
 #                                  absence reds the run, same as GHA)
 #               NETLIFY_AUTH_TOKEN + NETLIFY_SITE_ID  (tertiary blobs backup)
@@ -18,6 +22,7 @@
 set -uo pipefail
 
 GH_PAT="${GH_PAT:-}"
+ALERT_GH_PAT="${ALERT_GH_PAT:-$GH_PAT}"   # separate alert credential (F1)
 GITLAB_PAT="${GITLAB_PAT:-}"
 NETLIFY_AUTH_TOKEN="${NETLIFY_AUTH_TOKEN:-}"
 NETLIFY_SITE_ID="${NETLIFY_SITE_ID:-}"
@@ -38,8 +43,10 @@ fatal(){ echo "::error::$*" >&2; exit 1; }
 # ─── failure alerting (same marker/label as the GHA workflow) ──────────
 alert_on_failure() {
   local reason="${1:-unknown}"
+  # Dry-runs (scratch branch) must never page the PROD alert path (F10)
+  [ "${TARGET_BRANCH}" = "main" ] || return 0
   [ "${ALERTS_ENABLED:-1}" = "1" ] || return 0
-  GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" \
+  GH_PAT="$ALERT_GH_PAT" RUNNER_REPO="$RUNNER_REPO" \
   DEPLOY_URL="$DEPLOY_URL" REASON="$reason" python3 - <<'PYEOF' || true
 import datetime, json, os, urllib.request
 token = os.environ.get("GH_PAT", "")
@@ -142,17 +149,24 @@ if git diff --cached --quiet; then
   log "No data changes — upstream static since the last run"
 else
   PUSHED=true
-  git commit -q -m "chore(data): daily upstream refresh $(date -u +%Y-%m-%d) [netlify]"
+  git commit -q -m "chore(data): daily upstream refresh $(date -u +%Y-%m-%d) [netlify]" \
+    || fatal "git commit failed — refusing to push a stale HEAD (F11)"
+  # Rebase onto the branch we are pushing to when it exists remotely,
+  # else main (first push of a scratch branch cannot conflict) (F12)
+  REBASE_BASE=main
+  if git ls-remote --heads origin "${TARGET_BRANCH}" 2>/dev/null | grep -q .; then
+    REBASE_BASE="${TARGET_BRANCH}"
+  fi
   for attempt in 1 2 3; do
     if git push origin "HEAD:${TARGET_BRANCH}"; then
       log "data commit pushed (attempt ${attempt})"
       break
     fi
     if [ "${attempt}" -lt 3 ]; then
-      log "push attempt ${attempt} rejected — rebasing on origin/main, retrying"
-      if ! git pull --rebase origin main; then
+      log "push attempt ${attempt} rejected — rebasing on origin/${REBASE_BASE}, retrying"
+      if ! git pull --rebase origin "${REBASE_BASE}"; then
         git rebase --abort 2>/dev/null || true
-        fatal "rebase onto origin/main failed (conflict with a concurrent push?)"
+        fatal "rebase onto origin/${REBASE_BASE} failed (conflict with a concurrent push?)"
       fi
     else
       fatal "could not push the data commit after 3 attempts"
@@ -185,10 +199,13 @@ fi
 # ─── 8. prod verify (Vercel built_at poll) — main runs only ─────────────
 if [ "$TARGET_BRANCH" = "main" ]; then
   log "verifying production deployment…"
-  expected="$(python3 -c "import json; print(json.load(open('public/data/stats.json'))['built_at'])")"
+  expected="$(python3 -c "import json; print(json.load(open('public/data/stats.json'))['built_at'])" 2>/dev/null || true)"
+  [ -n "$expected" ] || fatal "stats.json unreadable — cannot verify prod (F5: an empty expected must never match an unreachable prod)"
   log "expecting prod built_at = ${expected}"
   verified=false
-  for attempt in $(seq 1 30); do
+  # 20×12s ≈ 4 min (W15-r3: trim the tail — full re-scrape + this loop
+  # approached Netlify's inferred 15-min build cap)
+  for attempt in $(seq 1 20); do
     got="$(curl -sf --max-time 15 "https://comfy-templates.vercel.app/data/stats.json" \
       | python3 -c "import json,sys; print(json.load(sys.stdin).get('built_at',''))" 2>/dev/null || true)"
     if [ "${got}" = "${expected}" ]; then
@@ -197,7 +214,7 @@ if [ "$TARGET_BRANCH" = "main" ]; then
     log "attempt ${attempt}: prod built_at = '${got:-unreachable}' — waiting for the Vercel deploy"
     sleep 12
   done
-  [ "$verified" = "true" ] || fatal "prod does not serve built_at ${expected} after ~6 min — Vercel deploy failed or very slow"
+  [ "$verified" = "true" ] || fatal "prod does not serve built_at ${expected} after ~4 min — Vercel deploy failed or very slow"
 fi
 
 # ─── 9. runner-repo state + alert auto-close — main runs only ───────────
