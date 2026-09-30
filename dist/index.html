@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>comfy-scraper — Netlify daily data refresh</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+           background: #0d1117; color: #c9d1d9; margin: 0;
+           display: grid; place-items: center; min-height: 100vh; }
+    main { max-width: 46rem; padding: 2rem; }
+    h1 { font-size: 1.2rem; color: #58a6ff; }
+    a { color: #58a6ff; }
+    .ok { color: #3fb950; }
+    .muted { color: #8b949e; font-size: .85rem; }
+    code { background: #161b22; padding: .1rem .35rem; border-radius: 4px; }
+    li { margin: .35rem 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>comfy-scraper — Netlify daily data refresh</h1>
+  <p>This site is a <strong>compute worker</strong>, not a web app. It has
+  no pages worth serving — this stub exists so the production deploy has
+  something to publish (scheduled functions only fire on published
+  deploys).</p>
+  <p class="ok">Liveness is observable elsewhere:</p>
+  <ul>
+    <li><span class="muted">build history:</span> this site's Netlify deploys
+        (one <code>scrape</code>-branch build per day, ~5 min)</li>
+    <li><span class="muted">data freshness:</span>
+        <a href="https://comfy-templates.vercel.app/data/stats.json">prod stats.json</a>
+        (<code>built_at</code> should be ≤ 1 day old)</li>
+    <li><span class="muted">runner state:</span>
+        <a href="https://github.com/comfy-backend/comfy-templates-runner/blob/main/state/last-run.json">state/last-run.json</a></li>
+    <li><span class="muted">backup layers:</span> GitLab mirror
+        (<code>ansgareutychisO/comfy-templates</code>) + Netlify Blobs store
+        <code>site:comfy-backup</code></li>
+  </ul>
+  <p class="muted">See the comfy-scraper repo README + docs/ for the
+  architecture. GHA weekly cron remains as backup.</p>
+</main>
+</body>
+</html>

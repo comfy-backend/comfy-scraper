@@ -1,0 +1,23 @@
+# comfy-scraper — SCRAPE-BRANCH netlify.toml (the compute lane).
+#
+# This file is the SOURCE OF TRUTH for the scrape branch's netlify.toml;
+# scripts/sync-scrape-branch.sh copies it over netlify.toml on the scrape
+# branch. The scrape branch is built daily via the build hook
+# (?branch=scrape) fired by netlify/functions/daily-scrape.mjs.
+#
+# Budget: ~5 min/day ≈ 150 build-min/month (free-is-free cap: 300; build
+# minutes are not metered on credit-based accounts). The publish dir is a
+# stub — the real output of this build is the DATA COMMIT pushed to
+# trinitylivy/comfy-templates, not any artifact Netlify serves.
+
+[build]
+  command = "bash netlify/scrape.sh"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Build env vars (GH_PAT, GITLAB_PAT, NETLIFY_AUTH_TOKEN, NETLIFY_SITE_ID)
+# are set at SITE level via the dashboard/API — see docs/DEPLOYMENT.md.
+# They are visible in BOTH branches' builds; nothing secret lives in git.

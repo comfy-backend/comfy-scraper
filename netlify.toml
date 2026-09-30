@@ -1,0 +1,19 @@
+# comfy-scraper — MAIN-branch netlify.toml (the production deploy).
+#
+# The production deploy is deliberately BORING: it publishes the static
+# status stub and carries the scheduled function. The heavy pipeline runs
+# as a BRANCH build on the `scrape` branch (see netlify/scrape.branch.toml
+# and README "Why a branch build"): production deploys cost 15 credits
+# each on credit-based free accounts — daily ones would burn ~450 cr/mo,
+# far over the 300 cr pool; branch builds are free.
+
+[build]
+  command = "echo 'production deploy: stub only (the scrape runs on the scrape branch)'"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Scheduled functions need the production deploy to be published at least
+# once; afterwards this branch rebuilds rarely (manual or on push to main).
