@@ -48,7 +48,7 @@ Both comfortable.
 | GHA + Netlify accidental overlap | race | race-safe push (rebase ×3) already handles it; schedules are 7h apart anyway |
 | Blobs fresh-site write gate | ops | clears on the first deploy record (the production publish in DEPLOYMENT step 6) |
 | `scrape` branch drift from main | process | `scripts/sync-scrape-branch.sh` (derived branch, scripted, never force-push) |
-| PAT death (the 2026-09-21 class) | ops | alert issue fires from the build itself (clone step reds loudly); GH_PAT rotation procedure already exists (`set-secret.py`) — extend to the Netlify site env when rotating |
+| PAT death (the 2026-09-21 class) | ops | the clone step reds loudly; the alert goes out via the SEPARATE `ALERT_GH_PAT` (issues:write) so a dead GH_PAT cannot also kill the alert; rotation procedure exists (`set-secret.py`) — extend to the Netlify site env when rotating |
 
 ## Backup layering after migration (the user's 2026-09-30 directive)
 
