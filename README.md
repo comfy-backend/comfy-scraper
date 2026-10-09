@@ -18,7 +18,7 @@ cron kept as a backup.
 ```
 Netlify scheduled function (production deploy, daily 04:00 UTC, <1s)
    └─ POSTs the site's build hook  (?branch=scrape)
-         └─ Netlify CLOUD BUILD runs on the `scrape` branch (~5 min, free):
+         └─ Netlify CLOUD BUILD runs on the `scrape` branch (~2–5 min, free):
                netlify/scrape.sh — an exact port of the GHA refresh.yml:
                  1. clone trinitylivy/comfy-templates (GH_PAT)
                  2. daily_refresh.sh   — the 8-step pipeline (stdlib Python)
@@ -73,7 +73,7 @@ docs/ARCHITECTURE.md              design + free-tier budget + risk register
 
 - Same gates in the same order — a green Netlify run means exactly what a
   green GHA run means (audit A–J, consumption test, race-safe push,
-  GL mirror fatal-on-fail, blobs best-effort best effort, blobs warning).
+  GL mirror fatal-on-fail, blobs warning-class).
 - Same alert protocol — both runners write to the same alert issue class;
   `data-refresh-alert` label, `<!-- bot: data-refresh-alert -->` marker.
 - Same race-safety — rebase + retry ×3 against origin/main, never force.

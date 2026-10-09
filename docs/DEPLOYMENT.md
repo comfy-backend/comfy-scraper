@@ -9,9 +9,9 @@
 > | Site | `shiny-pavlova-86b66a` (`b631a019-21ad-4716-adf4-04aab467fdd0`), account `trinitylivy's team` (`688b02550dc1ab56456ffa16`) |
 > | Git link | `comfy-backend/comfy-scraper`, production branch `main`; `allowed_branches = [main, scrape]` |
 > | Build hook | `daily-scrape` (`6ac84bb93a23aeb044d152f4`), branch `scrape` |
-> | Site env vars | `GH_PAT`, `ALERT_GH_PAT`, `GITLAB_PAT`, `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`, `BUILD_HOOK_URL` — all four scopes each |
-> | Scheduled fn | `daily-scrape.mjs`, `schedule: "0 4 * * *"` (daily 04:00 UTC), env-frozen at the 02:09 UTC production deploy (republish commit `a49ce76`) |
-> | First E2E fire | 2026-10-09 02:09:54 UTC branch build, **ready in 141 s**: data commit `490ddf52` (corpus 940→967), GL mirror same-day, Blobs snapshot `snapshots/2026-10-09/` (11.9 MB), Vercel prod verified, state `source: netlify` |
+> | Site env vars | `GH_PAT`, `ALERT_GH_PAT` (= GH_PAT for now; a dedicated issues-only PAT is pending), `GITLAB_PAT`, `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`, `BUILD_HOOK_URL` — all four scopes each |
+> | Scheduled fn | `daily-scrape.mjs`, `schedule: "0 4 * * *"` (daily 04:00 UTC), env-frozen at the last production deploy (values unchanged since the 02:09 UTC republish `a49ce76`; any later rotation requires a new republish) |
+> | First E2E fire | 2026-10-09 02:09:54 UTC branch build, **ready in 141 s**: data commit `490ddf52` (corpus 956→967), GL mirror same-day, Blobs snapshot `snapshots/2026-10-09/` (11.9 MB), Vercel prod verified, state `source: netlify` |
 > | Ramp-up | EXECUTED same day (watchdog daily 04:30+16:30 UTC + 26h threshold + self-heal dispatch; GHA lane moved to Wed/Thu) — see the data repo's `work/comfy-templates/docs/DESIGN_W15_BACKUP_NETLIFY.md` W18 section |
 >
 > API gotcha discovered during deployment (free tier): the ACCOUNT env
@@ -60,7 +60,6 @@ echo "site: $SITE"
 #    Site configuration → Build & deploy → Link repository → GitHub →
 #    comfy-backend/comfy-scraper, production branch: main.
 
-# 3. Site env vars (Build & deploy → Environment):
 # 3. Site env vars (Build & deploy → Environment):
 #    GH_PAT            trinitylivy PAT (repo push to comfy-templates)
 #    ALERT_GH_PAT      a SEPARATE scoped PAT (issues:write on the runner
