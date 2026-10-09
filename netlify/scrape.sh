@@ -36,6 +36,8 @@ WORK="${NETLIFY_BUILD_BASE:-$HOME}/comfy-scrape-work"
 LOG_PREFIX="[scrape]"
 PUSHED=false
 SUCCEEDED=false
+GL_RESULT="not_run"        # set by the GL mirror step (success/failure)
+STATE_DONE=false           # the exit trap must not double-write state
 
 log()  { echo "$LOG_PREFIX $*"; }
 fatal(){ echo "::error::$*" >&2; exit 1; }
@@ -102,6 +104,13 @@ on_exit() {
   local rc=$?
   if [ $rc -ne 0 ] && [ "$SUCCEEDED" != "true" ]; then
     alert_on_failure "exit rc=$rc"
+  fi
+  # W18-b (GAP 5a): the state update must run on ANY exit for main runs —
+  # a GL-mirror failure (fatal, AFTER prod-verify now) used to skip the
+  # state write entirely, leaving state/last-run.json stale, which reds
+  # watchdog probe 2 spuriously and hides the real failure (gl_mirror).
+  if [ "${TARGET_BRANCH}" = "main" ] && [ "${STATE_DONE}" != "true" ]; then
+    update_state || echo "::warning::state update (exit path) failed (non-fatal)"
   fi
 }
 trap on_exit EXIT
@@ -174,39 +183,9 @@ else
   done
 fi
 
-# ─── 6. GitLab mirror (redundant data backup — fatal on failure) ────────
-if [ "$TARGET_BRANCH" = "main" ]; then
-  log "GitLab mirror…"
-  mirrored=false
-  for attempt in 1 2 3 4 5; do
-    if git push "https://oauth2:${GITLAB_PAT}@gitlab.com/${GL_REPO}.git" HEAD:main 2>&1 | tee /tmp/glmirror.err; then
-      log "GitLab mirror OK (attempt ${attempt})"; mirrored=true; break
-    fi
-    if grep -qE "HTTP Basic: Access denied|Authentication failed|401" /tmp/glmirror.err 2>/dev/null; then
-      fatal "GitLab mirror got 401 — GITLAB_PAT dead/rotted (deterministic; not retrying)"
-    fi
-    log "mirror attempt ${attempt} failed — retrying in 20s"; sleep 20
-  done
-  [ "$mirrored" = "true" ] || fatal "GitLab mirror failed after 5 attempts — redundant copy stale: gitlab.com/${GL_REPO}"
-fi
-
-# ─── 7. Netlify Blobs snapshot (tertiary — warning on failure) ──────────
-BLOBS_RESULT="skipped_no_push"
-if [ "$PUSHED" = "true" ] && [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
-  log "blobs snapshot (tertiary backup)…"
-  if python3 work/comfy-templates/scripts/blobs_backup.py snapshot --keep 45; then
-    BLOBS_RESULT="success"
-  else
-    BLOBS_RESULT="failed"
-    echo "::warning::blobs snapshot failed (non-fatal — tertiary layer)"
-  fi
-elif [ "$PUSHED" = "true" ]; then
-  BLOBS_RESULT="skipped_no_secrets"
-  log "blobs snapshot skipped (Netlify secrets not set)"
-fi
-log "blobs snapshot result: ${BLOBS_RESULT}"
-
-# ─── 8. prod verify (Vercel built_at poll) — main runs only ─────────────
+# ─── 6. prod verify (Vercel built_at poll) — main runs only ─────────────
+# (W18-b: runs BEFORE the fatal GL mirror so a GL outage cannot hide a
+# broken Vercel deploy — order now matches refresh.yml.)
 if [ "$TARGET_BRANCH" = "main" ]; then
   log "verifying production deployment…"
   expected="$(python3 -c "import json; print(json.load(open('public/data/stats.json'))['built_at'])" 2>/dev/null || true)"
@@ -227,10 +206,47 @@ if [ "$TARGET_BRANCH" = "main" ]; then
   [ "$verified" = "true" ] || fatal "prod does not serve built_at ${expected} after ~4 min — Vercel deploy failed or very slow"
 fi
 
-# ─── 9. runner-repo state + alert auto-close — main runs only ───────────
+# ─── 7. GitLab mirror (redundant data backup — fatal on failure) ────────
+# (W18-b/GAP 5a: moved AFTER prod-verify — a GL failure must not kill
+# deploy verification; the state write now happens on ANY exit.)
 if [ "$TARGET_BRANCH" = "main" ]; then
+  log "GitLab mirror…"
+  mirrored=false
+  for attempt in 1 2 3 4 5; do
+    if git push "https://oauth2:${GITLAB_PAT}@gitlab.com/${GL_REPO}.git" HEAD:main 2>&1 | tee /tmp/glmirror.err; then
+      log "GitLab mirror OK (attempt ${attempt})"; mirrored=true; GL_RESULT="success"; break
+    fi
+    if grep -qE "HTTP Basic: Access denied|Authentication failed|401" /tmp/glmirror.err 2>/dev/null; then
+      fatal "GitLab mirror got 401 — GITLAB_PAT dead/rotted (deterministic; not retrying)"
+    fi
+    log "mirror attempt ${attempt} failed — retrying in 20s"; sleep 20
+  done
+  if [ "$mirrored" != "true" ]; then
+    GL_RESULT="failure"
+    fatal "GitLab mirror failed after 5 attempts — redundant copy stale: gitlab.com/${GL_REPO}"
+  fi
+fi
+
+# ─── 8. Netlify Blobs snapshot (tertiary — warning on failure) ──────────
+BLOBS_RESULT="skipped_no_push"
+if [ "$PUSHED" = "true" ] && [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
+  log "blobs snapshot (tertiary backup)…"
+  if python3 work/comfy-templates/scripts/blobs_backup.py snapshot --keep 45; then
+    BLOBS_RESULT="success"
+  else
+    BLOBS_RESULT="failed"
+    echo "::warning::blobs snapshot failed (non-fatal — tertiary layer)"
+  fi
+elif [ "$PUSHED" = "true" ]; then
+  BLOBS_RESULT="skipped_no_secrets"
+  log "blobs snapshot skipped (Netlify secrets not set)"
+fi
+log "blobs snapshot result: ${BLOBS_RESULT}"
+
+# ─── 9. runner-repo state (function — also called by the exit trap) ─────
+update_state() {
   log "state/last-run.json update (best-effort)…"
-  GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" GL_MIRROR="success" \
+  GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" GL_MIRROR="$GL_RESULT" \
   BLOBS_SNAPSHOT="$BLOBS_RESULT" \
   python3 - <<'PYEOF' || echo "::warning::state commit failed (non-fatal)"
 import base64, datetime, json, os, urllib.request
@@ -246,25 +262,35 @@ def call(method, body=None):
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read(); return resp.status, (json.loads(raw) if raw else {})
 
-sha, existing, existing_blobs = "", "", ""
+sha, existing, existing_blobs, _existing_rec = "", "", "", {}
 try:
     _, d = call("GET"); sha = d.get("sha", "")
-    _rec = json.loads(base64.b64decode(d.get("content", "")))
-    existing = _rec.get("date", ""); existing_blobs = _rec.get("blobs_snapshot", "")
+    _existing_rec = json.loads(base64.b64decode(d.get("content", "")))
+    existing = _existing_rec.get("date", "")
+    existing_blobs = _existing_rec.get("blobs_snapshot", "")
 except Exception: pass
 # W18-r1 P2 (mirror of the refresh.yml fix): first-writer-of-the-day-wins,
 # EXCEPT an unhealthy blobs record — a later same-day run with a real,
 # DIFFERENT blobs outcome may overwrite it, or the watchdog reds 2-3x on
 # a single transient failure. An empty outcome must NOT mask a failure.
 new_blobs = os.environ.get("BLOBS_SNAPSHOT", "")
-heals_unhealthy = (existing_blobs in ("failed", "skipped_no_secrets")
-                   and new_blobs and new_blobs != existing_blobs)
-if existing == today and not heals_unhealthy:
+new_gl = os.environ.get("GL_MIRROR", "")
+# W18-r3 P3-1: skip-class values are NOT real outcomes — they must not
+# "heal" a recorded failure (a skipped step yields 'skipped', never '').
+NOT_AN_OUTCOME = ("", "skipped", "skipped_no_push", "cancelled", "not_run")
+heals = (
+    (existing_blobs in ("failed", "skipped_no_secrets")
+     and new_blobs not in NOT_AN_OUTCOME and new_blobs != existing_blobs)
+    or (_existing_rec.get("gl_mirror") == "failure"
+        and new_gl not in NOT_AN_OUTCOME and new_gl != "failure")
+)
+if existing == today and not heals:
     print(f"state/last-run.json already records {today} — skipping."); raise SystemExit(0)
 if existing == today:
-    print(f"state/last-run.json records {today} with unhealthy "
-          f"blobs_snapshot={existing_blobs!r} — overwriting with this "
-          f"run's outcome ({new_blobs!r}).")
+    print(f"state/last-run.json records {today} with an unhealthy record "
+          f"(blobs={existing_blobs!r}, gl={_existing_rec.get('gl_mirror')!r}) — "
+          f"overwriting with this run's outcomes "
+          f"(blobs={new_blobs!r}, gl={new_gl!r}).")
 
 built_at, total = "", None
 try:
@@ -284,6 +310,11 @@ if sha:
 call("PUT", body)
 print(f"state/last-run.json updated to {today}.")
 PYEOF
+  STATE_DONE=true
+}
+
+if [ "$TARGET_BRANCH" = "main" ]; then
+  update_state || echo "::warning::state update failed (non-fatal)"
 
   log "auto-closing resolved alerts…"
   GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" DEPLOY_URL="$DEPLOY_URL" \
@@ -309,6 +340,79 @@ for issue in issues:
          json.dumps({"state": "closed"}).encode())
     closed += 1
 print(f"resolved {closed} alert issue(s)")
+PYEOF
+fi
+
+# ─── 10. watchdog-of-the-watchdog (GAP 1, W18-b) — main runs only ───────
+# The standby watchdog is the OUTER safety net (daily probes + self-heal).
+# Nothing probes the prober — if IT dies, every later lane failure goes
+# unnoticed. This daily lane is the independent rail that watches it: the
+# standby's state/watchdog.json heartbeat is PUBLIC. A DEDICATED label is
+# used so green refresh runs do NOT auto-close it (only a freshly-observed
+# heartbeat closes it — the probe itself is the closer).
+if [ "$TARGET_BRANCH" = "main" ]; then
+  log "standby-watchdog heartbeat probe…"
+  GH_PAT="$ALERT_GH_PAT" RUNNER_REPO="$RUNNER_REPO" DEPLOY_URL="$DEPLOY_URL" \
+  python3 - <<'PYEOF' || echo "::warning::watchdog-stale probe failed (non-fatal)"
+import datetime, json, os, urllib.request
+token = os.environ.get("GH_PAT", "")
+repo = os.environ["RUNNER_REPO"]
+url = os.environ["DEPLOY_URL"]
+label, marker = "watchdog-stale-alert", "<!-- bot: watchdog-stale-alert -->"
+state_url = ("https://raw.githubusercontent.com/comfyui-catalog/"
+             "comfy-templates-standby/main/state/watchdog.json")
+if not token:
+    raise SystemExit(0)
+
+def call(method, path, body=None):
+    req = urllib.request.Request(f"https://api.github.com{path}", method=method, data=body,
+        headers={"Authorization": f"token {token}", "User-Agent": "comfy-scraper",
+                 "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read(); return resp.status, (json.loads(raw) if raw else {})
+
+wd_date, age_days = "", None
+try:
+    with urllib.request.urlopen(state_url, timeout=30) as resp:
+        wd_date = json.load(resp).get("date", "")
+    age_days = (datetime.datetime.now(datetime.timezone.utc).date()
+                - datetime.date.fromisoformat(wd_date)).days
+except Exception as e:
+    print(f"watchdog.json unreachable ({e}) — treating as STALE (loud)")
+    age_days = 999
+
+try: _, issues = call("GET", f"/repos/{repo}/issues?labels={label}&state=open")
+except Exception: issues = []
+open_alerts = [i for i in issues if marker in (i.get("body") or "")]
+
+if age_days is not None and age_days > 2:
+    body_text = (
+        f"{marker}\n**STANDBY WATCHDOG HEARTBEAT STALE** — the outer safety "
+        f"net (daily freshness probes + self-heal dispatch) appears DEAD: "
+        f"state/watchdog.json last heartbeat = {wd_date or 'unreachable'} "
+        f"({age_days}d old). Every failure it would catch is currently "
+        f"unguarded. Check the standby repo's watchdog workflow state + its "
+        f"schedules.\n\n- Observed by the Netlify daily lane: {url}\n"
+        f"- Time (UTC): {datetime.datetime.now(datetime.timezone.utc).isoformat()}\n\n"
+        f"cc @trinitylivy")
+    if not open_alerts:
+        call("POST", f"/repos/{repo}/issues", json.dumps(
+            {"title": "Standby watchdog heartbeat STALE — action required",
+             "body": body_text, "labels": [label]}).encode())
+        print("watchdog-stale alert issue CREATED")
+    else:
+        call("POST", f"/repos/{repo}/issues/{open_alerts[0]['number']}/comments",
+             json.dumps({"body": body_text}).encode())
+        print(f"watchdog-stale alert issue #{open_alerts[0]['number']} COMMENTED")
+else:
+    for issue in open_alerts:
+        call("POST", f"/repos/{repo}/issues/{issue['number']}/comments",
+             json.dumps({"body": f"Recovered: standby watchdog heartbeat is "
+                                 f"fresh again ({wd_date}) — closing."}).encode())
+        call("PATCH", f"/repos/{repo}/issues/{issue['number']}",
+             json.dumps({"state": "closed"}).encode())
+    print(f"standby watchdog fresh ({wd_date}, {age_days}d) — "
+          f"closed {len(open_alerts)} stale-alert issue(s)")
 PYEOF
 fi
 

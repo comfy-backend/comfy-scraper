@@ -36,7 +36,7 @@ if git diff --cached --quiet && git diff --quiet; then
   echo "scrape branch already in sync"
 else
   git add -A
-  git commit -q -m "sync scrape branch from main $(date -u +%F) [script] ${SKIP}"
+  git commit -q -m "sync scrape branch from main $(date -u +%F) [script]${SKIP:+ ${SKIP}}"
   git push origin scrape
   echo "scrape branch updated + pushed"
 fi
