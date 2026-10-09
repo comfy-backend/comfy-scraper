@@ -192,9 +192,12 @@ if [ "$TARGET_BRANCH" = "main" ]; then
   [ -n "$expected" ] || fatal "stats.json unreadable — cannot verify prod (F5: an empty expected must never match an unreachable prod)"
   log "expecting prod built_at = ${expected}"
   verified=false
-  # 20×12s ≈ 4 min (W15-r3: trim the tail — full re-scrape + this loop
-  # approached Netlify's inferred 15-min build cap)
-  for attempt in $(seq 1 20); do
+  # 26×12s ≈ 5.2 min (W18-b: +6 over W15-r3's 20 — a rapid push series
+  # to main floods the Vercel build queue (every push = one Next.js
+  # build, serialized on Hobby); observed 2026-10-09: ~10 pushes/hour
+  # pushed deploy latency past 5 min and red'd a healthy run. Keep the
+  # total under the ~15-min Netlify build cap.)
+  for attempt in $(seq 1 26); do
     got="$(curl -sf --max-time 15 "https://comfy-templates.vercel.app/data/stats.json" \
       | python3 -c "import json,sys; print(json.load(sys.stdin).get('built_at',''))" 2>/dev/null || true)"
     if [ "${got}" = "${expected}" ]; then
