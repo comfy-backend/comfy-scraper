@@ -5,10 +5,13 @@ data pipeline: the weekly GitHub Actions scrape moves to a **daily run on
 Netlify's build infrastructure** (free tier), with the existing GHA weekly
 cron kept as a backup.
 
-> **Status: EXPERIMENT — deployment is PAT-gated** (needs a live Netlify
-> PAT + a one-time GitHub-App site link; see `docs/DEPLOYMENT.md`).
-> Everything else is built and locally validated. The moment the two
-> user-gated inputs land, deployment is ~10 minutes.
+> **Status: LIVE — deployed 2026-10-09, daily 04:00 UTC** (site
+> `shiny-pavlova-86b66a`; first E2E fire green in 141 s: data commit,
+> GitLab mirror, Blobs snapshot, Vercel prod verified — see
+> `docs/DEPLOYMENT.md` for the as-deployed record). The GHA weekly
+> cron (now Wed/Thu) remains the backup lane; the standby watchdog
+> (daily 04:30 + 16:30 UTC) alerts + self-heals if this lane goes
+> quiet.
 
 ## How it works
 

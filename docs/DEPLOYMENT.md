@@ -1,5 +1,25 @@
 # DEPLOYMENT.md — one-time PAT-gated setup (≈10 minutes once inputs land)
 
+> **DEPLOYED 2026-10-09 (W18) — this runbook is now HISTORICAL.**
+> The two user-gated inputs landed (a live Netlify PAT + the GitHub-App
+> link) and every step below was executed. As-deployed state:
+>
+> | Item | Value |
+> |---|---|
+> | Site | `shiny-pavlova-86b66a` (`b631a019-21ad-4716-adf4-04aab467fdd0`), account `trinitylivy's team` (`688b02550dc1ab56456ffa16`) |
+> | Git link | `comfy-backend/comfy-scraper`, production branch `main`; `allowed_branches = [main, scrape]` |
+> | Build hook | `daily-scrape` (`6ac84bb93a23aeb044d152f4`), branch `scrape` |
+> | Site env vars | `GH_PAT`, `ALERT_GH_PAT`, `GITLAB_PAT`, `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`, `BUILD_HOOK_URL` — all four scopes each |
+> | Scheduled fn | `daily-scrape.mjs`, `schedule: "0 4 * * *"` (daily 04:00 UTC), env-frozen at the 02:09 UTC production deploy (republish commit `a49ce76`) |
+> | First E2E fire | 2026-10-09 02:09:54 UTC branch build, **ready in 141 s**: data commit `490ddf52` (corpus 940→967), GL mirror same-day, Blobs snapshot `snapshots/2026-10-09/` (11.9 MB), Vercel prod verified, state `source: netlify` |
+> | Ramp-up | EXECUTED same day (watchdog daily 04:30+16:30 UTC + 26h threshold + self-heal dispatch; GHA lane moved to Wed/Thu) — see the data repo's `work/comfy-templates/docs/DESIGN_W15_BACKUP_NETLIFY.md` W18 section |
+>
+> API gotcha discovered during deployment (free tier): the ACCOUNT env
+> API rejects object bodies ("shared env var", 403 paid-only) — site env
+> vars must be created via `POST /api/v1/accounts/{acct}/env?site_id={site}`
+> with an **ARRAY body** `[{"key":…, "values":[{"value":…}], "site_ids":[…]}]`.
+> The site-level `/sites/{id}/env` POST route does not exist (404).
+
 The experiment is fully built; deployment is blocked ONLY on two
 user-gated inputs. Everything else below is scripted or copy-paste.
 
