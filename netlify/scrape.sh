@@ -246,13 +246,25 @@ def call(method, body=None):
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read(); return resp.status, (json.loads(raw) if raw else {})
 
-sha, existing = "", ""
+sha, existing, existing_blobs = "", "", ""
 try:
     _, d = call("GET"); sha = d.get("sha", "")
-    existing = json.loads(base64.b64decode(d.get("content", ""))).get("date", "")
+    _rec = json.loads(base64.b64decode(d.get("content", "")))
+    existing = _rec.get("date", ""); existing_blobs = _rec.get("blobs_snapshot", "")
 except Exception: pass
-if existing == today:
+# W18-r1 P2 (mirror of the refresh.yml fix): first-writer-of-the-day-wins,
+# EXCEPT an unhealthy blobs record — a later same-day run with a real,
+# DIFFERENT blobs outcome may overwrite it, or the watchdog reds 2-3x on
+# a single transient failure. An empty outcome must NOT mask a failure.
+new_blobs = os.environ.get("BLOBS_SNAPSHOT", "")
+heals_unhealthy = (existing_blobs in ("failed", "skipped_no_secrets")
+                   and new_blobs and new_blobs != existing_blobs)
+if existing == today and not heals_unhealthy:
     print(f"state/last-run.json already records {today} — skipping."); raise SystemExit(0)
+if existing == today:
+    print(f"state/last-run.json records {today} with unhealthy "
+          f"blobs_snapshot={existing_blobs!r} — overwriting with this "
+          f"run's outcome ({new_blobs!r}).")
 
 built_at, total = "", None
 try:
