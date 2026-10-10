@@ -37,6 +37,10 @@ LOG_PREFIX="[scrape]"
 PUSHED=false
 SUCCEEDED=false
 GL_RESULT="not_run"        # set by the GL mirror step (success/failure)
+BLOBS_RESULT="skipped_no_push"  # W19: initialized at the TOP — the exit-trap
+                           # state write reads it BEFORE section 8 runs (an
+                           # early fatal left it unbound under set -u; caught
+                           # live by the W19 ordering probe)
 STATE_DONE=false           # the exit trap must not double-write state
 
 log()  { echo "$LOG_PREFIX $*"; }
@@ -98,6 +102,80 @@ else:
          json.dumps({"body": body_text}).encode())
     print(f"[alert] issue #{open_alerts[0]['number']} COMMENTED")
 PYEOF
+}
+
+# ─── 9. runner-repo state writer (W19: DEFINED EARLY, above the trap
+#      registration — the exit trap calls it on ANY exit, so it must
+#      be parsed before any fatal can fire; defined late it was dead
+#      code on every failure path: the trap hit `update_state: command
+#      not found`, masked by `|| echo ::warning` — W19-C2 P1) ─────
+update_state() {
+  log "state/last-run.json update (best-effort)…"
+  GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" GL_MIRROR="$GL_RESULT" \
+  BLOBS_SNAPSHOT="$BLOBS_RESULT" \
+  python3 - <<'PYEOF' || echo "::warning::state commit failed (non-fatal)"
+import base64, datetime, json, os, urllib.request
+pat, repo = os.environ["GH_PAT"], os.environ["RUNNER_REPO"]
+today = datetime.datetime.now(datetime.timezone.utc).strftime("%F")
+api = f"https://api.github.com/repos/{repo}/contents/state/last-run.json"
+
+def call(method, body=None):
+    req = urllib.request.Request(api, method=method, data=body,
+        headers={"Authorization": f"token {pat}",
+                 "User-Agent": "comfy-scraper",
+                 "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read(); return resp.status, (json.loads(raw) if raw else {})
+
+sha, existing, existing_blobs, _existing_rec = "", "", "", {}
+try:
+    _, d = call("GET"); sha = d.get("sha", "")
+    _existing_rec = json.loads(base64.b64decode(d.get("content", "")))
+    existing = _existing_rec.get("date", "")
+    existing_blobs = _existing_rec.get("blobs_snapshot", "")
+except Exception: pass
+# W18-r1 P2 (mirror of the refresh.yml fix): first-writer-of-the-day-wins,
+# EXCEPT an unhealthy blobs record — a later same-day run with a real,
+# DIFFERENT blobs outcome may overwrite it, or the watchdog reds 2-3x on
+# a single transient failure. An empty outcome must NOT mask a failure.
+new_blobs = os.environ.get("BLOBS_SNAPSHOT", "")
+new_gl = os.environ.get("GL_MIRROR", "")
+# W18-r3 P3-1: skip-class values are NOT real outcomes — they must not
+# "heal" a recorded failure (a skipped step yields 'skipped', never '').
+NOT_AN_OUTCOME = ("", "skipped", "skipped_no_push", "cancelled", "not_run")
+heals = (
+    (existing_blobs in ("failed", "skipped_no_secrets")
+     and new_blobs not in NOT_AN_OUTCOME and new_blobs != existing_blobs)
+    or (_existing_rec.get("gl_mirror") == "failure"
+        and new_gl not in NOT_AN_OUTCOME and new_gl != "failure")
+)
+if existing == today and not heals:
+    print(f"state/last-run.json already records {today} — skipping."); raise SystemExit(0)
+if existing == today:
+    print(f"state/last-run.json records {today} with an unhealthy record "
+          f"(blobs={existing_blobs!r}, gl={_existing_rec.get('gl_mirror')!r}) — "
+          f"overwriting with this run's outcomes "
+          f"(blobs={new_blobs!r}, gl={new_gl!r}).")
+
+built_at, total = "", None
+try:
+    stats = json.load(open("public/data/stats.json"))
+    built_at, total = stats.get("built_at", ""), stats.get("total_workflows")
+except Exception: pass
+payload = {"date": today, "built_at": built_at, "corpus_total": total,
+           "gl_mirror": os.environ.get("GL_MIRROR", ""),
+           "blobs_snapshot": os.environ.get("BLOBS_SNAPSHOT", ""),
+           "source": "netlify",
+           "purpose": "public observability: last successful data-refresh run "
+                      "(keeps GHA schedules alive + shows liveness of the workload)"}
+body = json.dumps({"message": f"state: netlify refresh ran on {today}",
+                   "content": base64.b64encode(json.dumps(payload, indent=2).encode()).decode()}).encode()
+if sha:
+    body = json.loads(body.decode()); body["sha"] = sha; body = json.dumps(body).encode()
+call("PUT", body)
+print(f"state/last-run.json updated to {today}.")
+PYEOF
+  STATE_DONE=true
 }
 
 on_exit() {
@@ -206,7 +284,7 @@ if [ "$TARGET_BRANCH" = "main" ]; then
     log "attempt ${attempt}: prod built_at = '${got:-unreachable}' — waiting for the Vercel deploy"
     sleep 12
   done
-  [ "$verified" = "true" ] || fatal "prod does not serve built_at ${expected} after ~4 min — Vercel deploy failed or very slow"
+  [ "$verified" = "true" ] || fatal "prod does not serve built_at ${expected} after ~5 min (26x12s) — Vercel deploy failed or very slow"
 fi
 
 # ─── 7. GitLab mirror (redundant data backup — fatal on failure) ────────
@@ -220,6 +298,7 @@ if [ "$TARGET_BRANCH" = "main" ]; then
       log "GitLab mirror OK (attempt ${attempt})"; mirrored=true; GL_RESULT="success"; break
     fi
     if grep -qE "HTTP Basic: Access denied|Authentication failed|401" /tmp/glmirror.err 2>/dev/null; then
+      GL_RESULT="failure"  # W19 P2: record it — the state write must never say not_run for a real mirror failure
       fatal "GitLab mirror got 401 — GITLAB_PAT dead/rotted (deterministic; not retrying)"
     fi
     log "mirror attempt ${attempt} failed — retrying in 20s"; sleep 20
@@ -246,75 +325,6 @@ elif [ "$PUSHED" = "true" ]; then
 fi
 log "blobs snapshot result: ${BLOBS_RESULT}"
 
-# ─── 9. runner-repo state (function — also called by the exit trap) ─────
-update_state() {
-  log "state/last-run.json update (best-effort)…"
-  GH_PAT="$GH_PAT" RUNNER_REPO="$RUNNER_REPO" GL_MIRROR="$GL_RESULT" \
-  BLOBS_SNAPSHOT="$BLOBS_RESULT" \
-  python3 - <<'PYEOF' || echo "::warning::state commit failed (non-fatal)"
-import base64, datetime, json, os, urllib.request
-pat, repo = os.environ["GH_PAT"], os.environ["RUNNER_REPO"]
-today = datetime.datetime.now(datetime.timezone.utc).strftime("%F")
-api = f"https://api.github.com/repos/{repo}/contents/state/last-run.json"
-
-def call(method, body=None):
-    req = urllib.request.Request(api, method=method, data=body,
-        headers={"Authorization": f"token {pat}",
-                 "User-Agent": "comfy-scraper",
-                 "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read(); return resp.status, (json.loads(raw) if raw else {})
-
-sha, existing, existing_blobs, _existing_rec = "", "", "", {}
-try:
-    _, d = call("GET"); sha = d.get("sha", "")
-    _existing_rec = json.loads(base64.b64decode(d.get("content", "")))
-    existing = _existing_rec.get("date", "")
-    existing_blobs = _existing_rec.get("blobs_snapshot", "")
-except Exception: pass
-# W18-r1 P2 (mirror of the refresh.yml fix): first-writer-of-the-day-wins,
-# EXCEPT an unhealthy blobs record — a later same-day run with a real,
-# DIFFERENT blobs outcome may overwrite it, or the watchdog reds 2-3x on
-# a single transient failure. An empty outcome must NOT mask a failure.
-new_blobs = os.environ.get("BLOBS_SNAPSHOT", "")
-new_gl = os.environ.get("GL_MIRROR", "")
-# W18-r3 P3-1: skip-class values are NOT real outcomes — they must not
-# "heal" a recorded failure (a skipped step yields 'skipped', never '').
-NOT_AN_OUTCOME = ("", "skipped", "skipped_no_push", "cancelled", "not_run")
-heals = (
-    (existing_blobs in ("failed", "skipped_no_secrets")
-     and new_blobs not in NOT_AN_OUTCOME and new_blobs != existing_blobs)
-    or (_existing_rec.get("gl_mirror") == "failure"
-        and new_gl not in NOT_AN_OUTCOME and new_gl != "failure")
-)
-if existing == today and not heals:
-    print(f"state/last-run.json already records {today} — skipping."); raise SystemExit(0)
-if existing == today:
-    print(f"state/last-run.json records {today} with an unhealthy record "
-          f"(blobs={existing_blobs!r}, gl={_existing_rec.get('gl_mirror')!r}) — "
-          f"overwriting with this run's outcomes "
-          f"(blobs={new_blobs!r}, gl={new_gl!r}).")
-
-built_at, total = "", None
-try:
-    stats = json.load(open("public/data/stats.json"))
-    built_at, total = stats.get("built_at", ""), stats.get("total_workflows")
-except Exception: pass
-payload = {"date": today, "built_at": built_at, "corpus_total": total,
-           "gl_mirror": os.environ.get("GL_MIRROR", ""),
-           "blobs_snapshot": os.environ.get("BLOBS_SNAPSHOT", ""),
-           "source": "netlify",
-           "purpose": "public observability: last successful data-refresh run "
-                      "(keeps GHA schedules alive + shows liveness of the workload)"}
-body = json.dumps({"message": f"state: netlify refresh ran on {today}",
-                   "content": base64.b64encode(json.dumps(payload, indent=2).encode()).decode()}).encode()
-if sha:
-    body = json.loads(body.decode()); body["sha"] = sha; body = json.dumps(body).encode()
-call("PUT", body)
-print(f"state/last-run.json updated to {today}.")
-PYEOF
-  STATE_DONE=true
-}
 
 if [ "$TARGET_BRANCH" = "main" ]; then
   update_state || echo "::warning::state update failed (non-fatal)"
