@@ -11,8 +11,15 @@
 #                                  token so a dead GH_PAT cannot also kill
 #                                  the alert, the 2026-09-21 silent-death
 #                                  class; falls back to GH_PAT if unset)
-# Optional env: GITLAB_PAT        (redundant mirror; W89 warning-class on failure —
-#                                  absence reds the run, same as GHA)
+# Optional env: GITLAB_PAT        (redundant mirror. W89 warning-class on
+#                                  FAILURE (both lanes: no exit here,
+#                                  continue-on-error on GHA). The
+#                                  ABSENT-PAT case diverges from GHA on
+#                                  purpose: this preflight still reds the
+#                                  Netlify run (a missing mirror credential
+#                                  is a config error worth catching), while
+#                                  GHA's absent-PAT exit 1 is warning-class
+#                                  under continue-on-error (W89))
 #               NETLIFY_AUTH_TOKEN + NETLIFY_SITE_ID  (tertiary blobs backup)
 #               TARGET_BRANCH     (default main; a scratch branch = dry-run:
 #                                  prod-verify + state + alert-close skipped)
@@ -143,11 +150,22 @@ new_gl = os.environ.get("GL_MIRROR", "")
 # W18-r3 P3-1: skip-class values are NOT real outcomes — they must not
 # "heal" a recorded failure (a skipped step yields 'skipped', never '').
 NOT_AN_OUTCOME = ("", "skipped", "skipped_no_push", "cancelled", "not_run")
+# W89b (2026-10-31, R2 review fix): a same-day PLACEHOLDER record
+# (skip-class: '', 'not_run', 'skipped*', 'cancelled') is not an
+# observation either — a later same-day run with a REAL outcome
+# ('success'/'failure') always overwrites it. Before this, a run that
+# died pre-GL recorded gl_mirror='not_run' and the NEXT run's genuine GL
+# 'failure' could not replace it (observed live 2026-10-31) — the
+# watchdog's GL probe stayed green all day over a real outage.
 heals = (
     (existing_blobs in ("failed", "skipped_no_secrets")
      and new_blobs not in NOT_AN_OUTCOME and new_blobs != existing_blobs)
+    or (existing_blobs in NOT_AN_OUTCOME
+        and new_blobs not in NOT_AN_OUTCOME)
     or (_existing_rec.get("gl_mirror") == "failure"
         and new_gl not in NOT_AN_OUTCOME and new_gl != "failure")
+    or (_existing_rec.get("gl_mirror") in NOT_AN_OUTCOME
+        and new_gl not in NOT_AN_OUTCOME)
 )
 if existing == today and not heals:
     print(f"state/last-run.json already records {today} — skipping."); raise SystemExit(0)
