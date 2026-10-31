@@ -11,7 +11,7 @@
 #                                  token so a dead GH_PAT cannot also kill
 #                                  the alert, the 2026-09-21 silent-death
 #                                  class; falls back to GH_PAT if unset)
-# Optional env: GITLAB_PAT        (redundant mirror; REQUIRED for main runs —
+# Optional env: GITLAB_PAT        (redundant mirror; W89 warning-class on failure —
 #                                  absence reds the run, same as GHA)
 #               NETLIFY_AUTH_TOKEN + NETLIFY_SITE_ID  (tertiary blobs backup)
 #               TARGET_BRANCH     (default main; a scratch branch = dry-run:
@@ -287,9 +287,16 @@ if [ "$TARGET_BRANCH" = "main" ]; then
   [ "$verified" = "true" ] || fatal "prod does not serve built_at ${expected} after ~5 min (26x12s) — Vercel deploy failed or very slow"
 fi
 
-# ─── 7. GitLab mirror (redundant data backup — fatal on failure) ────────
+# ─── 7. GitLab mirror (redundant data backup — W89 warning-class) ────────
 # (W18-b/GAP 5a: moved AFTER prod-verify — a GL failure must not kill
 # deploy verification; the state write now happens on ANY exit.)
+# W89 (2026-10-31): demoted to WARNING-CLASS. The 2026-10-21+ incident:
+# the GL PAT was revoked → this step reded every build for 9 days while
+# the data itself kept landing (Oct 22-29) — a redundant-backup outage
+# must never red the data lane again (the same amendment the blobs lane
+# got in W18). GL_RESULT=failure is still recorded (the state write +
+# the standby watchdog's GL probe keep tracking it); the ::warning still
+# pages the Netlify dashboard.
 if [ "$TARGET_BRANCH" = "main" ]; then
   log "GitLab mirror…"
   mirrored=false
@@ -299,13 +306,16 @@ if [ "$TARGET_BRANCH" = "main" ]; then
     fi
     if grep -qE "HTTP Basic: Access denied|Authentication failed|401" /tmp/glmirror.err 2>/dev/null; then
       GL_RESULT="failure"  # W19 P2: record it — the state write must never say not_run for a real mirror failure
-      fatal "GitLab mirror got 401 — GITLAB_PAT dead/rotted (deterministic; not retrying)"
+      log "WARN: GitLab mirror got 401 — GITLAB_PAT dead/rotted (deterministic; no retry). Continuing: data is already pushed + prod-verified on GitHub (W89 warning-class)."
+      echo "::warning::GitLab mirror 401 — GITLAB_PAT dead/rotted (W89 warning-class; awaiting a fresh GL PAT)"
+      break
     fi
     log "mirror attempt ${attempt} failed — retrying in 20s"; sleep 20
   done
   if [ "$mirrored" != "true" ]; then
     GL_RESULT="failure"
-    fatal "GitLab mirror failed after 5 attempts — redundant copy stale: gitlab.com/${GL_REPO}"
+    log "WARN: GitLab mirror failed — redundant copy stale: gitlab.com/${GL_REPO} (W89 warning-class; GitHub holds the data)."
+    echo "::warning::GitLab mirror failed after 5 attempts (W89 warning-class; GitHub holds the data)"
   fi
 fi
 
